@@ -7,12 +7,12 @@ use App\Entity\Dialogue;
 use App\Entity\Message;
 use App\Entity\User;
 use App\Form\MessageType;
+use App\Manager\DialogueManager;
 use App\Manager\MessageManager;
 use App\Model\MessageRequest;
 use App\Security\Voter\MessageVoter;
 use Knp\Component\Pager\PaginatorInterface;
 use Ramsey\Uuid\Uuid;
-use Sensio\Bundle\FrameworkExtraBundle\Configuration\ParamConverter;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
@@ -27,17 +27,20 @@ class MessageController extends AbstractWebController
 
     public function __construct(
         private readonly MessageManager $messageManager,
+        private readonly DialogueManager $dialogueManager,
         private readonly PaginatorInterface $paginator,
         private readonly RequestStack $requestStack,
     ) {
     }
 
-    #[Route('/dialogue/{uuid}/messages', name: 'web_user_dialogue_messages_list', requirements: ['uuid' => Uuid::VALID_PATTERN])]
-    #[ParamConverter('dialogue', class: Dialogue::class, options: ['mapping' => ['uuid' => 'uuid']])]
-    public function MessagesListOfDialogue(Request $request, Dialogue $dialogue): Response
+    #[Route('/dialogue/{uuid}/messages', name: 'web_user_dialogue_messages_list', requirements: ['uuid' => Uuid::VALID_PATTERN], methods: ['GET', 'POST'])]
+    public function MessagesListOfDialogue(Request $request, string $uuid): Response
     {
         /** @var User $user */
         $user = $this->getUser();
+
+        /** @var Dialogue $dialogue */
+        $dialogue = $this->dialogueManager->dialogue($uuid);
 
         $messages = $this->paginator->paginate(
             $this->messageManager->messagesOfDialogue($dialogue->getId(), $user),
@@ -63,12 +66,14 @@ class MessageController extends AbstractWebController
     }
 
     #[Route('/messages/{uuid}/edit', name: 'web_user_message_edit', requirements: ['uuid' => Uuid::VALID_PATTERN], methods: ['GET', 'POST'])]
-    #[ParamConverter('message', class: Message::class, options: ['mapping' => ['uuid' => 'uuid']])]
     #[IsGranted(MessageVoter::IS_SENDER, subject: 'uuid')]
-    public function editMessage(Request $request, Message $message, string $uuid): Response|RedirectResponse
+    public function editMessage(Request $request, string $uuid): Response|RedirectResponse
     {
         /** @var User $user */
         $user = $this->getUser();
+
+        /** @var Message $message */
+        $message = $this->messageManager->getMessage($uuid);
 
         $model = (new MessageRequest())->setMessage($message->getMessage());
         $form = $this->createForm(MessageType::class, $model);
@@ -76,43 +81,35 @@ class MessageController extends AbstractWebController
         if ($form->isSubmitted() && $form->isValid()) {
             $this->messageManager->editMessage($message, $model->getMessage());
 
-            return $this->redirectToRoute('web_user_dialogue_messages_list', ['uuid' => $message->getDialogue()->getUuid()]);
+            return $this->redirectToRoute('web_user_dialogue_messages_list', $this->messageManager->dialogUuidByMessageUuid($uuid));
         }
 
-        return $this->render('web/message/edit.html.twig', [
+        return $this->render('web/message/edit.html.twig', array_merge_recursive([
             'user' => $user,
-            'form' => $form->createView(),
-            'uuid' => $message->getDialogue()->getUuid(),
-        ]);
+            'form' => $form->createView()],
+            $this->messageManager->dialogUuidByMessageUuid($uuid)
+        ));
     }
 
     #[Route('/messages/{uuid}/delete', name: 'web_user_message_delete', requirements: ['uuid' => Uuid::VALID_PATTERN], methods: ['GET', 'POST'])]
-    #[ParamConverter('message', class: Message::class, options: ['mapping' => ['uuid' => 'uuid']])]
     #[IsGranted(MessageVoter::IS_SENDER, subject: 'uuid')]
-    public function deleteMessage(Request $request, Message $message, string $uuid): Response|RedirectResponse
+    public function deleteMessage(Request $request, string $uuid): Response|RedirectResponse
     {
         $form = $this->createForm(EntityDeleteForm::class);
         $form->handleRequest($request);
         if ($form->isSubmitted() && $form->isValid()) {
+            $dialogUuid = $this->messageManager->dialogUuidByMessageUuid($uuid);
+
             $this->messageManager->removeMessage($uuid);
             $this->requestStack->getSession()->getFlashBag()->add('danger', 'message_was_deleted_successfully');
 
-            return $this->redirectToRoute('web_user_dialogue_messages_list', [
-                'uuid' => $message->getDialogue()->getUuid(),
-            ]);
+            return $this->redirectToRoute('web_user_dialogue_messages_list', $dialogUuid);
         }
 
         return $this->render('web/message/delete.html.twig', [
             'form' => $form->createView(),
             'user' => $this->getUser(),
-            'uuid' => $message->getDialogue()->getUuid(),
-        ]);
-    }
-
-    public function numberAllUnReadMessages(): Response
-    {
-        return $this->render('block/numberOfUnreadMessages.html.twig', [
-            'numberMessages' => $this->messageManager->numberNotReadMessages($this->getUser()),
+            'uuid' => $this->messageManager->dialogUuidByMessageUuid($uuid),
         ]);
     }
 }
